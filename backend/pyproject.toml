@@ -1,0 +1,13 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Talking like AI - Backend"
+requires-python = ">=3.13"
+dependencies = [
+    "beanie>=2.0.1",
+    "fastapi>=0.128.3",
+    "motor>=3.7.1",
+    "openai>=2.17.0",
+    "pydantic-settings>=2.12.0",
+    "uvicorn[standard]>=0.40.0",
+]
