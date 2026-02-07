@@ -233,7 +233,7 @@ export default function ChatPage() {
                   className={`w-full bg-transparent px-2 py-2 text-[#4A3728] outline-none transition-all ${
                     hasRated ? "border-b-2 border-[#6B5B4E]" : "border-b-2 border-[#C4B5A5] focus:border-[#6B5B4E]"
                   }`}
-                  style={hasRated ? { transform: "translateY(8px)" } : {}}
+                  // style={hasRated ? { transform: "translateY(8px)" } : {}}
                 />
                 <p className="mt-1 text-center text-sm text-[#A0927B]">按下回车发送</p>
               </div>
@@ -384,7 +384,7 @@ export default function ChatPage() {
                       <p className="inline-block text-base leading-relaxed text-[#4A3728] md:text-lg">
                         {msg.content}
                       </p>
-                      <p className="mt-2 inline-block block text-sm leading-relaxed text-[#A0927B]">
+                      <p className="mt-2 block text-sm leading-relaxed text-[#A0927B]">
                         {MOCK_ANNOTATIONS[i]}
                       </p>
                     </div>
