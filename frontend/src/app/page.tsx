@@ -68,7 +68,7 @@ export default function SplashPage() {
     >
       {/* Fixed title at top */}
       <h1
-        className="animate-fade-in-up mb-10 text-4xl font-light tracking-wide text-[#4A3728] md:text-5xl"
+        className="animate-fade-in-up mb-11 text-4xl font-light tracking-wide text-[#4A3728] md:text-5xl"
         style={{ animationDelay: `${TITLE_DELAY}ms` }}
       >
         Talking like AI
@@ -76,12 +76,18 @@ export default function SplashPage() {
 
       {/* Two-column content */}
       <div
-        className={`flex items-center transition-all duration-1000 ease-in-out ${shifted ? "gap-12 md:gap-16" : "gap-0"
+        className={`flex items-center transition-all duration-1000 ease-in-out ${shifted ? "gap-11 md:gap-14" : "gap-0"
           }`}
       >
+        {/* Left side decorative line */}
+        <div
+          className={`h-[115px] w-px bg-[#C4B5A5] transition-opacity duration-700 ${allDone ? "opacity-100" : "opacity-0"
+            }`}
+        />
+
         {/* Left column */}
         <div className="shrink-0 text-center">
-          <div className="space-y-2">
+          <div className="w-72 space-y-2 md:w-80">
             {LINES_LEFT.map((line, i) => (
               <p
                 key={i}
@@ -96,7 +102,7 @@ export default function SplashPage() {
           </div>
         </div>
 
-        {/* Divider */}
+        {/* Center divider */}
         <div
           className={`self-stretch transition-all duration-700 ease-in-out ${shifted
             ? "w-px scale-y-100 bg-[#C4B5A5] opacity-100"
@@ -125,6 +131,12 @@ export default function SplashPage() {
               ))}
           </div>
         </div>
+
+        {/* Right side decorative line */}
+        <div
+          className={`h-[115px] w-px bg-[#C4B5A5] transition-opacity duration-700 ${allDone ? "opacity-100" : "opacity-0"
+            }`}
+        />
       </div>
 
       {/* Continue hint */}
