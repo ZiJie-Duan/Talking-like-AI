@@ -55,7 +55,13 @@ export default function SplashPage() {
   }, [shifted]);
 
   const handleClick = () => {
-    if (!allDone) return;
+    if (!allDone) {
+      // 加速动画，直接显示完整内容
+      setShifted(true);
+      setAllDone(true);
+      return;
+    }
+    // 动画完成后点击进入聊天页
     setFadeOut(true);
     setTimeout(() => router.push("/chat"), 500);
   };
@@ -63,8 +69,8 @@ export default function SplashPage() {
   return (
     <div
       onClick={handleClick}
-      className={`flex min-h-screen select-none flex-col items-center justify-center bg-[#F5F0EB] px-6 font-sans transition-opacity duration-500 ${fadeOut ? "opacity-0" : "opacity-100"
-        } ${allDone ? "cursor-pointer" : ""}`}
+      className={`flex min-h-screen cursor-pointer select-none flex-col items-center justify-center bg-[#F5F0EB] px-6 font-sans transition-opacity duration-500 ${fadeOut ? "opacity-0" : "opacity-100"
+        }`}
     >
       {/* Fixed title at top */}
       <h1
