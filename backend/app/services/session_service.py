@@ -55,8 +55,8 @@ async def _touch(session: Session) -> None:
     await session.save()
 
 
-def _sse_event(event: str, data: dict) -> str:
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+def _sse_event(event: str, data: dict) -> dict:
+    return {"event": event, "data": json.dumps(data, ensure_ascii=False)}
 
 
 # ── Public API ────────────────────────────────────────────────
@@ -84,7 +84,7 @@ async def submit_issue(session_id: str, content: str) -> SessionOut:
     return _to_out(session)
 
 
-async def stage2_chat(session_id: str, content: str) -> AsyncGenerator[str]:
+async def stage2_chat(session_id: str, content: str) -> AsyncGenerator[dict]:
     session = await _get_session(session_id)
     if session.stage != SessionStage.CONVERSATION:
         raise InvalidStageError(session.stage.value, SessionStage.CONVERSATION.value)
@@ -124,7 +124,7 @@ async def save_mood_rating(session_id: str, value: int) -> SessionOut:
     return _to_out(session)
 
 
-async def complete_stage2(session_id: str) -> AsyncGenerator[str]:
+async def complete_stage2(session_id: str) -> AsyncGenerator[dict]:
     session = await _get_session(session_id)
     if session.stage != SessionStage.CONVERSATION:
         raise InvalidStageError(session.stage.value, SessionStage.CONVERSATION.value)
@@ -152,7 +152,7 @@ async def complete_stage2(session_id: str) -> AsyncGenerator[str]:
     yield _sse_event("done", {"message_index": 0})
 
 
-async def stage3_chat(session_id: str, content: str) -> AsyncGenerator[str]:
+async def stage3_chat(session_id: str, content: str) -> AsyncGenerator[dict]:
     session = await _get_session(session_id)
     if session.stage != SessionStage.ROLE_SWAP:
         raise InvalidStageError(session.stage.value, SessionStage.ROLE_SWAP.value)
