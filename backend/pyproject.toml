@@ -9,5 +9,6 @@ dependencies = [
     "motor>=3.7.1",
     "openai>=2.17.0",
     "pydantic-settings>=2.12.0",
+    "sse-starlette>=2.2.1",
     "uvicorn[standard]>=0.40.0",
 ]
