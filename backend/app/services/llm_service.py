@@ -26,8 +26,7 @@ async def stream_chat(messages: list[dict]) -> AsyncGenerator[str]:
         stream = await client.chat.completions.create(
             model=settings.OPENAI_MODEL,
             messages=messages,
-            temperature=settings.LLM_TEMPERATURE_CHAT,
-            max_tokens=settings.LLM_MAX_TOKENS_CHAT,
+            max_completion_tokens=settings.LLM_MAX_TOKENS_CHAT,
             stream=True,
         )
         async for chunk in stream:
@@ -46,8 +45,7 @@ async def json_chat(messages: list[dict]) -> dict:
         response = await client.chat.completions.create(
             model=settings.OPENAI_MODEL,
             messages=messages,
-            temperature=settings.LLM_TEMPERATURE_ANNOTATION,
-            max_tokens=settings.LLM_MAX_TOKENS_ANNOTATION,
+            max_completion_tokens=settings.LLM_MAX_TOKENS_ANNOTATION,
             response_format={"type": "json_object"},
         )
         content = response.choices[0].message.content
