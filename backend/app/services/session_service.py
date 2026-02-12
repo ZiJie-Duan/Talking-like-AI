@@ -14,6 +14,7 @@ from app.models.session import Annotation, Message, MoodRating, Session, Session
 from app.prompts import stage2, stage3, stage4
 from app.prompts.builder import build_messages
 from app.schemas.session import SessionOut
+from app.config import settings
 from app.services import llm_service
 
 logger = logging.getLogger(__name__)
@@ -94,11 +95,12 @@ async def stage2_chat(session_id: str, content: str) -> AsyncGenerator[dict]:
     session.stage2_messages.append(user_msg)
     await _touch(session)
 
-    # Build prompt and stream AI response
-    messages = build_messages(stage2.SYSTEM_PROMPT, session.stage2_messages)
+    # Build prompt and stream AI response (主力模型)
+    system_prompt = stage2.SYSTEM_PROMPT.format(user_issue=session.user_issue)
+    messages = build_messages(system_prompt, session.stage2_messages)
     full_content = ""
 
-    async for token in llm_service.stream_chat(messages):
+    async for token in llm_service.stream_chat(messages, model=settings.MODEL_MAIN):
         full_content += token
         yield _sse_event("token", {"content": token})
 
@@ -135,12 +137,12 @@ async def complete_stage2(session_id: str) -> AsyncGenerator[dict]:
     session.stage = SessionStage.ROLE_SWAP
     await _touch(session)
 
-    # Generate AI opening message for stage 3
+    # Generate AI opening message for stage 3 (主力模型)
     opening_prompt = stage3.OPENING_PROMPT.format(user_issue=session.user_issue)
     messages = build_messages(stage3.SYSTEM_PROMPT, [], extra_user_message=opening_prompt)
     full_content = ""
 
-    async for token in llm_service.stream_chat(messages):
+    async for token in llm_service.stream_chat(messages, model=settings.MODEL_MAIN):
         full_content += token
         yield _sse_event("token", {"content": token})
 
@@ -162,11 +164,11 @@ async def stage3_chat(session_id: str, content: str) -> AsyncGenerator[dict]:
     session.stage3_messages.append(user_msg)
     await _touch(session)
 
-    # Build prompt and stream AI response
+    # Build prompt and stream AI response (主力模型)
     messages = build_messages(stage3.SYSTEM_PROMPT, session.stage3_messages)
     full_content = ""
 
-    async for token in llm_service.stream_chat(messages):
+    async for token in llm_service.stream_chat(messages, model=settings.MODEL_MAIN):
         full_content += token
         yield _sse_event("token", {"content": token})
 
@@ -187,7 +189,8 @@ async def complete_stage3(session_id: str) -> SessionOut:
 
     # Build stage3 conversation text for annotation
     conversation_text = "\n".join(
-        f"[{m.role}]: {m.content}" for m in session.stage3_messages
+        f"[{'倾诉者' if m.role == 'ai' else '倾听者'}]: {m.content}"
+        for m in session.stage3_messages
     )
     messages = build_messages(
         stage4.SYSTEM_PROMPT,
@@ -195,7 +198,7 @@ async def complete_stage3(session_id: str) -> SessionOut:
         extra_user_message=f"以下是对话内容：\n\n{conversation_text}",
     )
 
-    result = await llm_service.json_chat(messages)
+    result = await llm_service.json_chat(messages, model=settings.MODEL_STRONG)
 
     # Parse annotations
     raw_annotations = result.get("annotations", [])

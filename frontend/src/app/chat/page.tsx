@@ -24,13 +24,11 @@ export default function ChatPage() {
   const [annotations, setAnnotations] = useState<Array<{ message_index: number; content: string }>>([]);
 
   const [isLoading, setIsLoading] = useState(false);
-  const [streamingContent, setStreamingContent] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // 情绪评分相关状态
-  const [isRatingMode, setIsRatingMode] = useState(false);
+  const [showSlider, setShowSlider] = useState(false);
   const [moodRating, setMoodRating] = useState(50);
-  const [hasRated, setHasRated] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const sliderRef = useRef<HTMLInputElement>(null);
@@ -43,7 +41,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [stage2Messages, stage3Messages, streamingContent, scrollToBottom]);
+  }, [stage2Messages, stage3Messages, scrollToBottom]);
 
   // 组件挂载时创建 session
   useEffect(() => {
@@ -60,23 +58,53 @@ export default function ChatPage() {
     }
   }, [errorMsg]);
 
-  // 通用 SSE 流式消费：累积 token，done 时返回完整文本
+  // 通用 SSE 流式消费：通过 rAF 节流渲染，确保逐帧更新
   const consumeStream = useCallback(
-    async (stream: AsyncGenerator<SSEEvent>): Promise<string> => {
+    async (
+      stream: AsyncGenerator<SSEEvent>,
+      onUpdate: (fullText: string) => void,
+    ): Promise<string> => {
       let full = "";
+      let rafId: number | null = null;
+
+      const scheduleFlush = () => {
+        if (rafId === null) {
+          rafId = requestAnimationFrame(() => {
+            rafId = null;
+            onUpdate(full);
+          });
+        }
+      };
+
       for await (const evt of stream) {
         if (evt.event === "token") {
-          const chunk = (evt.data as { content: string }).content;
-          full += chunk;
-          setStreamingContent((prev) => prev + chunk);
+          full += (evt.data as { content: string }).content;
+          scheduleFlush();
         } else if (evt.event === "error") {
-          const detail = (evt.data as { detail: string }).detail;
-          throw new Error(detail);
+          if (rafId !== null) cancelAnimationFrame(rafId);
+          throw new Error((evt.data as { detail: string }).detail);
         }
-        // "done" — loop will end naturally
       }
+
+      // 确保最终状态完整刷新
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      onUpdate(full);
+
       return full;
     },
+    [],
+  );
+
+  // 更新消息列表中最后一条消息的 content（用于流式渲染）
+  const updateLastMessage = useCallback(
+    (setter: React.Dispatch<React.SetStateAction<Array<{ role: "user" | "ai"; content: string }>>>) =>
+      (fullText: string) => {
+        setter((prev) => {
+          const copy = [...prev];
+          copy[copy.length - 1] = { ...copy[copy.length - 1], content: fullText };
+          return copy;
+        });
+      },
     [],
   );
 
@@ -87,78 +115,94 @@ export default function ChatPage() {
     setErrorMsg(null);
     try {
       await submitIssue(sessionId, userIssue.trim());
-      const userMsg = { role: "user" as const, content: userIssue.trim() };
-      setStage2Messages([userMsg]);
+      // 同时添加用户消息和 AI 占位消息，流式更新 AI 消息内容
+      setStage2Messages([
+        { role: "user", content: userIssue.trim() },
+        { role: "ai", content: "" },
+      ]);
       setStage("conversation");
 
-      // 发送第一条消息给 AI 并流式接收回复
-      setStreamingContent("");
-      const aiText = await consumeStream(
+      await consumeStream(
         streamStage2Chat(sessionId, userIssue.trim()),
+        updateLastMessage(setStage2Messages),
       );
-      setStage2Messages((prev) => [...prev, { role: "ai", content: aiText }]);
-      setStreamingContent("");
-      setIsRatingMode(true);
-      setHasRated(false);
+      setShowSlider(true);
     } catch (e: unknown) {
+      // 出错时清理空的 AI 占位消息
+      setStage2Messages((prev) => {
+        const last = prev[prev.length - 1];
+        return last?.role === "ai" && !last.content ? prev.slice(0, -1) : prev;
+      });
       setErrorMsg(`提交失败: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setIsLoading(false);
     }
-  }, [userIssue, sessionId, consumeStream]);
+  }, [userIssue, sessionId, consumeStream, updateLastMessage]);
 
-  // --- Stage 2: 发送消息 ---
+  // --- Stage 2: 发送消息（同时自动提交当前心情评分） ---
   const handleSendMessage = useCallback(async () => {
     if (!currentInput.trim() || !sessionId || isLoading) return;
     const text = currentInput.trim();
     setCurrentInput("");
     setIsLoading(true);
     setErrorMsg(null);
+    setShowSlider(false);
 
-    setStage2Messages((prev) => [...prev, { role: "user", content: text }]);
-    setStreamingContent("");
+    // 自动提交当前心情评分
     try {
-      const aiText = await consumeStream(streamStage2Chat(sessionId, text));
-      setStage2Messages((prev) => [...prev, { role: "ai", content: aiText }]);
-      setStreamingContent("");
-      setIsRatingMode(true);
-      setHasRated(false);
+      await saveMoodRating(sessionId, moodRating);
     } catch (e: unknown) {
+      setErrorMsg(`保存评分失败: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // 同时添加用户消息和 AI 占位消息
+    setStage2Messages((prev) => [
+      ...prev,
+      { role: "user", content: text },
+      { role: "ai", content: "" },
+    ]);
+    try {
+      await consumeStream(
+        streamStage2Chat(sessionId, text),
+        updateLastMessage(setStage2Messages),
+      );
+      setShowSlider(true);
+    } catch (e: unknown) {
+      setStage2Messages((prev) => {
+        const last = prev[prev.length - 1];
+        return last?.role === "ai" && !last.content ? prev.slice(0, -1) : prev;
+      });
       setErrorMsg(`发送失败: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setIsLoading(false);
     }
-  }, [currentInput, sessionId, isLoading, consumeStream]);
-
-  // --- Stage 2: 保存心情评分 ---
-  const handleSaveRating = useCallback(async () => {
-    if (!sessionId) return;
-    try {
-      await saveMoodRating(sessionId, moodRating);
-      setHasRated(true);
-      setIsRatingMode(false);
-    } catch (e: unknown) {
-      setErrorMsg(`保存评分失败: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }, [sessionId, moodRating]);
+  }, [currentInput, sessionId, isLoading, moodRating, consumeStream, updateLastMessage]);
 
   // --- Stage 2 → 3: 完成对话 ---
   const handleStage2Complete = useCallback(async () => {
     if (!sessionId || isLoading) return;
     setIsLoading(true);
     setErrorMsg(null);
-    setStreamingContent("");
+    setShowSlider(false);
+
+    // 先提交当前评分
+    await saveMoodRating(sessionId, moodRating).catch(() => {});
+
     try {
-      const aiText = await consumeStream(streamCompleteStage2(sessionId));
-      setStage3Messages([{ role: "ai", content: aiText }]);
-      setStreamingContent("");
+      // 立即切换到角色交换阶段，AI 消息在新视图中流式渲染
+      setStage3Messages([{ role: "ai", content: "" }]);
       setStage("roleSwap");
+
+      await consumeStream(
+        streamCompleteStage2(sessionId),
+        updateLastMessage(setStage3Messages),
+      );
     } catch (e: unknown) {
       setErrorMsg(`完成对话失败: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setIsLoading(false);
     }
-  }, [sessionId, isLoading, consumeStream]);
+  }, [sessionId, isLoading, moodRating, consumeStream, updateLastMessage]);
 
   // --- Stage 3: 发送安慰消息 ---
   const handleStage3SendMessage = useCallback(async () => {
@@ -168,18 +212,26 @@ export default function ChatPage() {
     setIsLoading(true);
     setErrorMsg(null);
 
-    setStage3Messages((prev) => [...prev, { role: "user", content: text }]);
-    setStreamingContent("");
+    setStage3Messages((prev) => [
+      ...prev,
+      { role: "user", content: text },
+      { role: "ai", content: "" },
+    ]);
     try {
-      const aiText = await consumeStream(streamStage3Chat(sessionId, text));
-      setStage3Messages((prev) => [...prev, { role: "ai", content: aiText }]);
-      setStreamingContent("");
+      await consumeStream(
+        streamStage3Chat(sessionId, text),
+        updateLastMessage(setStage3Messages),
+      );
     } catch (e: unknown) {
+      setStage3Messages((prev) => {
+        const last = prev[prev.length - 1];
+        return last?.role === "ai" && !last.content ? prev.slice(0, -1) : prev;
+      });
       setErrorMsg(`发送失败: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setIsLoading(false);
     }
-  }, [currentInput, sessionId, isLoading, consumeStream]);
+  }, [currentInput, sessionId, isLoading, consumeStream, updateLastMessage]);
 
   // --- Stage 3 → 4: 查看批注 ---
   const handleStage3Complete = useCallback(async () => {
@@ -209,10 +261,8 @@ export default function ChatPage() {
       setStage2Messages([]);
       setStage3Messages([]);
       setAnnotations([]);
-      setIsRatingMode(false);
-      setHasRated(false);
+      setShowSlider(false);
       setMoodRating(50);
-      setStreamingContent("");
     } catch (e: unknown) {
       setErrorMsg(`创建会话失败: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -269,7 +319,11 @@ export default function ChatPage() {
         <div className="flex-1 overflow-y-auto px-6 pb-32 pt-12">
           <div className="mx-auto max-w-2xl space-y-8">
             {stage2Messages.map((msg, i) => (
-              <div key={i} className="animate-fade-in-up flex flex-col items-center" style={{ animationDelay: `${i * 150}ms` }}>
+              <div
+                key={i}
+                className={`flex flex-col items-center ${msg.role === "user" ? "animate-fade-in-up" : ""}`}
+                style={msg.role === "user" ? { animationDelay: `${i * 150}ms` } : undefined}
+              >
                 <div className="flex w-full items-start gap-4">
                   {msg.role === "ai" && (
                     <div className="h-8 w-8 shrink-0 rounded-full bg-[#C4B5A5]" />
@@ -302,30 +356,34 @@ export default function ChatPage() {
                 )}
               </div>
             ))}
-
-            {/* 流式 AI 回复 */}
-            {streamingContent && (
-              <div className="animate-fade-in-up flex flex-col items-center">
-                <div className="flex w-full items-start gap-4">
-                  <div className="h-8 w-8 shrink-0 rounded-full bg-[#C4B5A5]" />
-                  <div className="flex-1 text-left">
-                    <p className="inline-block text-base leading-relaxed text-[#4A3728] md:text-lg">
-                      {streamingContent}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
             <div ref={chatEndRef} />
           </div>
         </div>
 
         {/* 输入区域 - 固定在底部 */}
-        <div className="relative mb-16 flex min-h-[80px] shrink-0 items-center border-t border-[#C4B5A5] bg-[#F5F0EB] px-6">
-          <div className="mx-auto w-full max-w-2xl">
-            {isRatingMode ? (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-sm text-[#A0927B]">
+        <div className="relative mb-16 shrink-0 border-t border-[#C4B5A5] bg-[#F5F0EB] px-6 py-6">
+          <div className="mx-auto w-full max-w-2xl space-y-5">
+            {/* 文本输入框 —— 始终可见，在上方 */}
+            <div className="relative">
+              <input
+                type="text"
+                value={currentInput}
+                onChange={(e) => setCurrentInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSendMessage();
+                }}
+                disabled={isLoading}
+                placeholder="输入你的回复..."
+                className="w-full border-b-2 border-[#C4B5A5] bg-transparent px-2 py-2 text-[#4A3728] outline-none transition-colors focus:border-[#6B5B4E] disabled:opacity-50"
+              />
+              <p className="mt-2 text-center text-sm text-[#A0927B]">
+                {isLoading ? "AI 正在回复..." : "按下回车发送"}
+              </p>
+            </div>
+            {/* 心情评分滑块 —— AI 回复后显示，在下方，宽度为输入框的 2/3 */}
+            {showSlider && (
+              <div className="mx-auto w-2/3 space-y-1">
+                <div className="flex items-center justify-between text-xs text-[#A0927B]">
                   <span>糟糕</span>
                   <span>愉快</span>
                 </div>
@@ -337,9 +395,6 @@ export default function ChatPage() {
                     max="100"
                     value={moodRating}
                     onChange={(e) => setMoodRating(Number(e.target.value))}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleSaveRating();
-                    }}
                     className="w-full cursor-pointer appearance-none bg-transparent"
                     style={{
                       height: "2px",
@@ -365,26 +420,6 @@ export default function ChatPage() {
                     }
                   `}</style>
                 </div>
-                <p className="text-center text-sm text-[#A0927B]">按下回车保存评分</p>
-              </div>
-            ) : (
-              <div className="relative">
-                <input
-                  type="text"
-                  value={currentInput}
-                  onChange={(e) => setCurrentInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleSendMessage();
-                  }}
-                  disabled={isLoading}
-                  placeholder="输入你的回复..."
-                  className={`w-full bg-transparent px-2 py-2 text-[#4A3728] outline-none transition-all disabled:opacity-50 ${
-                    hasRated ? "border-b-2 border-[#6B5B4E]" : "border-b-2 border-[#C4B5A5] focus:border-[#6B5B4E]"
-                  }`}
-                />
-                <p className="mt-1 text-center text-sm text-[#A0927B]">
-                  {isLoading ? "AI 正在回复..." : "按下回车发送"}
-                </p>
               </div>
             )}
           </div>
@@ -415,7 +450,11 @@ export default function ChatPage() {
         <div className="flex-1 overflow-y-auto px-6 pb-32 pt-12">
           <div className="mx-auto max-w-2xl space-y-8">
             {stage3Messages.map((msg, i) => (
-              <div key={i} className="animate-fade-in-up flex flex-col items-center" style={{ animationDelay: `${i * 150}ms` }}>
+              <div
+                key={i}
+                className={`flex flex-col items-center ${msg.role === "user" ? "animate-fade-in-up" : ""}`}
+                style={msg.role === "user" ? { animationDelay: `${i * 150}ms` } : undefined}
+              >
                 <div className="flex w-full items-start gap-4">
                   {msg.role === "ai" && (
                     <div className="h-8 w-8 shrink-0 rounded-full bg-[#C4B5A5]" />
@@ -448,20 +487,6 @@ export default function ChatPage() {
                 )}
               </div>
             ))}
-
-            {/* 流式 AI 回复 */}
-            {streamingContent && (
-              <div className="animate-fade-in-up flex flex-col items-center">
-                <div className="flex w-full items-start gap-4">
-                  <div className="h-8 w-8 shrink-0 rounded-full bg-[#C4B5A5]" />
-                  <div className="flex-1 text-left">
-                    <p className="inline-block text-base leading-relaxed text-[#4A3728] md:text-lg">
-                      {streamingContent}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
             <div ref={chatEndRef} />
           </div>
         </div>
@@ -525,7 +550,7 @@ export default function ChatPage() {
                         <p className="inline-block text-base leading-relaxed text-[#4A3728] md:text-lg">
                           {msg.content}
                         </p>
-                        {annotation && (
+                        {annotation && msg.role === "user" && (
                           <p className="mt-2 block text-sm leading-relaxed text-[#A0927B]">
                             {annotation.content}
                           </p>

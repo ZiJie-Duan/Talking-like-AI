@@ -19,12 +19,15 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
-async def stream_chat(messages: list[dict]) -> AsyncGenerator[str]:
+async def stream_chat(
+    messages: list[dict],
+    model: str = settings.MODEL_MAIN,
+) -> AsyncGenerator[str]:
     """Stream chat completion, yielding content deltas."""
     client = _get_client()
     try:
         stream = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
+            model=model,
             messages=messages,
             max_completion_tokens=settings.LLM_MAX_TOKENS_CHAT,
             stream=True,
@@ -38,12 +41,15 @@ async def stream_chat(messages: list[dict]) -> AsyncGenerator[str]:
         raise LLMError(detail=str(e)) from e
 
 
-async def json_chat(messages: list[dict]) -> dict:
+async def json_chat(
+    messages: list[dict],
+    model: str = settings.MODEL_STRONG,
+) -> dict:
     """Non-streaming chat completion with JSON response format."""
     client = _get_client()
     try:
         response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
+            model=model,
             messages=messages,
             max_completion_tokens=settings.LLM_MAX_TOKENS_ANNOTATION,
             response_format={"type": "json_object"},
