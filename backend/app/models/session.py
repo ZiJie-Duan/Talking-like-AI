@@ -11,6 +11,7 @@ class SessionStage(str, Enum):
     CONVERSATION = "conversation"
     ROLE_SWAP = "roleSwap"
     REVIEW = "review"
+    TERMINATED = "terminated"
 
 
 class Message(BaseModel):

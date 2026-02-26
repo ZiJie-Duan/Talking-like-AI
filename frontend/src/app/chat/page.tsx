@@ -3,16 +3,32 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   createSession,
+  getSession,
   submitIssue,
   saveMoodRating,
   completeStage3,
   streamStage2Chat,
   streamCompleteStage2,
   streamStage3Chat,
+  ModerationTriggeredError,
   type SSEEvent,
+  type SessionOut,
 } from "@/lib/api";
 
-type Stage = "input" | "conversation" | "roleSwap" | "review";
+type Stage = "input" | "conversation" | "roleSwap" | "review" | "terminated";
+
+const SESSION_KEY = "sessionId";
+
+function mapBackendStage(backendStage: string): Stage {
+  const map: Record<string, Stage> = {
+    input: "input",
+    conversation: "conversation",
+    roleSwap: "roleSwap",
+    review: "review",
+    terminated: "terminated",
+  };
+  return map[backendStage] ?? "input";
+}
 
 export default function ChatPage() {
   const [stage, setStage] = useState<Stage>("input");
@@ -26,15 +42,14 @@ export default function ChatPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // 情绪评分相关状态
   const [showSlider, setShowSlider] = useState(false);
   const [moodRating, setMoodRating] = useState(50);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const sliderRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  // 自动滚动到底部
   const scrollToBottom = useCallback(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
@@ -43,12 +58,53 @@ export default function ChatPage() {
     scrollToBottom();
   }, [stage2Messages, stage3Messages, scrollToBottom]);
 
-  // 组件挂载时创建 session
+  // 组件挂载时：尝试从 localStorage 恢复 session，否则创建新的
   useEffect(() => {
-    createSession()
-      .then((s) => setSessionId(s.id))
-      .catch((e) => setErrorMsg(`创建会话失败: ${e.message}`));
-  }, []);
+    async function startFresh() {
+      try {
+        const s = await createSession();
+        localStorage.setItem(SESSION_KEY, s.id);
+        setSessionId(s.id);
+      } catch (e: unknown) {
+        setErrorMsg(`创建会话失败: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
+    async function init() {
+      const savedId = localStorage.getItem(SESSION_KEY);
+      if (!savedId) {
+        await startFresh();
+        return;
+      }
+      try {
+        const session = await getSession(savedId);
+        if (session.stage === "terminated") {
+          await startFresh();
+          return;
+        }
+        restoreFromSession(session);
+      } catch {
+        await startFresh();
+      }
+    }
+
+    function restoreFromSession(session: SessionOut) {
+      const restoredStage = mapBackendStage(session.stage);
+      setSessionId(session.id);
+      setStage(restoredStage);
+      setUserIssue(session.user_issue ?? "");
+      setStage2Messages(session.stage2_messages);
+      setStage3Messages(session.stage3_messages);
+      setAnnotations(session.annotations);
+      // 恢复 showSlider：conversation 阶段且最后一条是 AI 消息
+      if (restoredStage === "conversation" && session.stage2_messages.length > 0) {
+        const last = session.stage2_messages[session.stage2_messages.length - 1];
+        setShowSlider(last.role === "ai");
+      }
+    }
+
+    init();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 消除错误提示
   useEffect(() => {
@@ -58,7 +114,21 @@ export default function ChatPage() {
     }
   }, [errorMsg]);
 
-  // 通用 SSE 流式消费：通过 rAF 节流渲染，确保逐帧更新
+  // 取消当前正在进行的请求
+  const abortCurrent = useCallback(() => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+  }, []);
+
+  // 创建新的 AbortController（自动取消上一个）
+  const newAbort = useCallback((): AbortController => {
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    return controller;
+  }, []);
+
+  // 通用 SSE 流式消费：rAF 节流渲染，追踪 done 事件检测传输截断
   const consumeStream = useCallback(
     async (
       stream: AsyncGenerator<SSEEvent>,
@@ -66,6 +136,7 @@ export default function ChatPage() {
     ): Promise<string> => {
       let full = "";
       let rafId: number | null = null;
+      let receivedDone = false;
 
       const scheduleFlush = () => {
         if (rafId === null) {
@@ -76,26 +147,35 @@ export default function ChatPage() {
         }
       };
 
-      for await (const evt of stream) {
-        if (evt.event === "token") {
-          full += (evt.data as { content: string }).content;
-          scheduleFlush();
-        } else if (evt.event === "error") {
-          if (rafId !== null) cancelAnimationFrame(rafId);
-          throw new Error((evt.data as { detail: string }).detail);
+      try {
+        for await (const evt of stream) {
+          if (evt.event === "token") {
+            full += (evt.data as { content: string }).content;
+            scheduleFlush();
+          } else if (evt.event === "done") {
+            receivedDone = true;
+          } else if (evt.event === "error") {
+            throw new Error((evt.data as { detail: string }).detail);
+          }
+        }
+      } finally {
+        if (rafId !== null) {
+          cancelAnimationFrame(rafId);
+          rafId = null;
         }
       }
 
-      // 确保最终状态完整刷新
-      if (rafId !== null) cancelAnimationFrame(rafId);
       onUpdate(full);
+
+      if (!receivedDone) {
+        throw new Error("连接意外断开，请重试");
+      }
 
       return full;
     },
     [],
   );
 
-  // 更新消息列表中最后一条消息的 content（用于流式渲染）
   const updateLastMessage = useCallback(
     (setter: React.Dispatch<React.SetStateAction<Array<{ role: "user" | "ai"; content: string }>>>) =>
       (fullText: string) => {
@@ -115,20 +195,24 @@ export default function ChatPage() {
     setErrorMsg(null);
     try {
       await submitIssue(sessionId, userIssue.trim());
-      // 同时添加用户消息和 AI 占位消息，流式更新 AI 消息内容
       setStage2Messages([
         { role: "user", content: userIssue.trim() },
         { role: "ai", content: "" },
       ]);
       setStage("conversation");
 
+      const controller = newAbort();
       await consumeStream(
-        streamStage2Chat(sessionId, userIssue.trim()),
+        streamStage2Chat(sessionId, userIssue.trim(), controller.signal),
         updateLastMessage(setStage2Messages),
       );
       setShowSlider(true);
     } catch (e: unknown) {
-      // 出错时清理空的 AI 占位消息
+      if (e instanceof ModerationTriggeredError) {
+        setStage("terminated");
+        return;
+      }
+      if (e instanceof Error && e.name === "AbortError") return;
       setStage2Messages((prev) => {
         const last = prev[prev.length - 1];
         return last?.role === "ai" && !last.content ? prev.slice(0, -1) : prev;
@@ -137,7 +221,7 @@ export default function ChatPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [userIssue, sessionId, consumeStream, updateLastMessage]);
+  }, [userIssue, sessionId, consumeStream, updateLastMessage, newAbort]);
 
   // --- Stage 2: 发送消息（同时自动提交当前心情评分） ---
   const handleSendMessage = useCallback(async () => {
@@ -148,26 +232,30 @@ export default function ChatPage() {
     setErrorMsg(null);
     setShowSlider(false);
 
-    // 自动提交当前心情评分
     try {
       await saveMoodRating(sessionId, moodRating);
     } catch (e: unknown) {
       setErrorMsg(`保存评分失败: ${e instanceof Error ? e.message : String(e)}`);
     }
 
-    // 同时添加用户消息和 AI 占位消息
     setStage2Messages((prev) => [
       ...prev,
       { role: "user", content: text },
       { role: "ai", content: "" },
     ]);
     try {
+      const controller = newAbort();
       await consumeStream(
-        streamStage2Chat(sessionId, text),
+        streamStage2Chat(sessionId, text, controller.signal),
         updateLastMessage(setStage2Messages),
       );
       setShowSlider(true);
     } catch (e: unknown) {
+      if (e instanceof ModerationTriggeredError) {
+        setStage("terminated");
+        return;
+      }
+      if (e instanceof Error && e.name === "AbortError") return;
       setStage2Messages((prev) => {
         const last = prev[prev.length - 1];
         return last?.role === "ai" && !last.content ? prev.slice(0, -1) : prev;
@@ -176,7 +264,7 @@ export default function ChatPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [currentInput, sessionId, isLoading, moodRating, consumeStream, updateLastMessage]);
+  }, [currentInput, sessionId, isLoading, moodRating, consumeStream, updateLastMessage, newAbort]);
 
   // --- Stage 2 → 3: 完成对话 ---
   const handleStage2Complete = useCallback(async () => {
@@ -185,24 +273,31 @@ export default function ChatPage() {
     setErrorMsg(null);
     setShowSlider(false);
 
-    // 先提交当前评分
     await saveMoodRating(sessionId, moodRating).catch(() => {});
 
-    try {
-      // 立即切换到角色交换阶段，AI 消息在新视图中流式渲染
-      setStage3Messages([{ role: "ai", content: "" }]);
-      setStage("roleSwap");
+    // 乐观切换到 roleSwap，保留快照用于回滚
+    const prevStage2Messages = stage2Messages;
+    setStage3Messages([{ role: "ai", content: "" }]);
+    setStage("roleSwap");
 
+    try {
+      const controller = newAbort();
       await consumeStream(
-        streamCompleteStage2(sessionId),
+        streamCompleteStage2(sessionId, controller.signal),
         updateLastMessage(setStage3Messages),
       );
     } catch (e: unknown) {
+      if (e instanceof Error && e.name === "AbortError") return;
+      // 回滚到 conversation 阶段
+      setStage3Messages([]);
+      setStage("conversation");
+      setStage2Messages(prevStage2Messages);
+      setShowSlider(true);
       setErrorMsg(`完成对话失败: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setIsLoading(false);
     }
-  }, [sessionId, isLoading, moodRating, consumeStream, updateLastMessage]);
+  }, [sessionId, isLoading, moodRating, stage2Messages, consumeStream, updateLastMessage, newAbort]);
 
   // --- Stage 3: 发送安慰消息 ---
   const handleStage3SendMessage = useCallback(async () => {
@@ -218,11 +313,17 @@ export default function ChatPage() {
       { role: "ai", content: "" },
     ]);
     try {
+      const controller = newAbort();
       await consumeStream(
-        streamStage3Chat(sessionId, text),
+        streamStage3Chat(sessionId, text, controller.signal),
         updateLastMessage(setStage3Messages),
       );
     } catch (e: unknown) {
+      if (e instanceof ModerationTriggeredError) {
+        setStage("terminated");
+        return;
+      }
+      if (e instanceof Error && e.name === "AbortError") return;
       setStage3Messages((prev) => {
         const last = prev[prev.length - 1];
         return last?.role === "ai" && !last.content ? prev.slice(0, -1) : prev;
@@ -231,7 +332,7 @@ export default function ChatPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [currentInput, sessionId, isLoading, consumeStream, updateLastMessage]);
+  }, [currentInput, sessionId, isLoading, consumeStream, updateLastMessage, newAbort]);
 
   // --- Stage 3 → 4: 查看批注 ---
   const handleStage3Complete = useCallback(async () => {
@@ -251,9 +352,11 @@ export default function ChatPage() {
 
   // --- 重新开始 ---
   const handleRestart = useCallback(async () => {
+    abortCurrent();
     setErrorMsg(null);
     try {
       const s = await createSession();
+      localStorage.setItem(SESSION_KEY, s.id);
       setSessionId(s.id);
       setStage("input");
       setUserIssue("");
@@ -266,7 +369,15 @@ export default function ChatPage() {
     } catch (e: unknown) {
       setErrorMsg(`创建会话失败: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, []);
+  }, [abortCurrent]);
+
+  // 终止阶段：按任意键重新开始
+  useEffect(() => {
+    if (stage !== "terminated") return;
+    const handler = () => handleRestart();
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [stage, handleRestart]);
 
   // 错误提示组件
   const errorBanner = errorMsg && (
@@ -591,6 +702,20 @@ export default function ChatPage() {
             </div>
           </div>
         </div>
+      </div>
+    );
+  }
+
+  // 终止界面
+  if (stage === "terminated") {
+    return (
+      <div className="fixed inset-0 flex flex-col items-center justify-center bg-[#F5F0EB] font-sans">
+        <p className="animate-terminated-title text-2xl font-light tracking-widest text-[#4A3728]">
+          练习因偏离主题而终止
+        </p>
+        <p className="animate-terminated-hint mt-6 text-sm tracking-wider text-[#A0927B]">
+          按下任意键重新开始
+        </p>
       </div>
     );
   }

@@ -7,7 +7,8 @@ class Settings(BaseSettings):
 
     # 三档模型
     MODEL_LIGHT: str = "gpt-5-nano-2025-08-07"   # 辅助模型（轻量任务）
-    MODEL_MAIN: str = "gpt-5-mini-2025-08-07"    # 主力模型（日常对话）
+    #MODEL_MAIN: str = "gpt-5-mini-2025-08-07"    # 主力模型（日常对话）
+    MODEL_MAIN: str = "gpt-4.1-2025-04-14"    # 主力模型（日常对话）
     MODEL_STRONG: str = "gpt-5.2-2025-12-11"     # 强模型（复杂推理）
 
     LLM_TEMPERATURE_CHAT: float = 0.7

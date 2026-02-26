@@ -1,5 +1,12 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+export class ModerationTriggeredError extends Error {
+  constructor() {
+    super("moderation_triggered");
+    this.name = "ModerationTriggeredError";
+  }
+}
+
 interface SessionResponse {
   id: string;
   stage: string;
@@ -30,6 +37,12 @@ export async function createSession(): Promise<SessionResponse> {
   return res.json();
 }
 
+export async function getSession(sessionId: string): Promise<SessionOut> {
+  const res = await fetch(`${API_BASE}/api/sessions/${sessionId}`);
+  if (!res.ok) throw new Error(`getSession failed: ${res.status}`);
+  return res.json();
+}
+
 export async function submitIssue(
   sessionId: string,
   content: string,
@@ -39,6 +52,7 @@ export async function submitIssue(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content }),
   });
+  if (res.status === 451) throw new ModerationTriggeredError();
   if (!res.ok) throw new Error(`submitIssue failed: ${res.status}`);
   return res.json();
 }
@@ -101,9 +115,11 @@ async function* parseSSE(
         }
 
         if (dataStr) {
+          if (event === "moderation") throw new ModerationTriggeredError();
           try {
             yield { event, data: JSON.parse(dataStr) };
-          } catch {
+          } catch (err) {
+            if (err instanceof ModerationTriggeredError) throw err;
             yield { event, data: { raw: dataStr } };
           }
         }
@@ -122,9 +138,11 @@ async function* parseSSE(
         }
       }
       if (dataStr) {
+        if (event === "moderation") throw new ModerationTriggeredError();
         try {
           yield { event, data: JSON.parse(dataStr) };
-        } catch {
+        } catch (err) {
+          if (err instanceof ModerationTriggeredError) throw err;
           yield { event, data: { raw: dataStr } };
         }
       }
@@ -137,6 +155,7 @@ async function* parseSSE(
 export async function* streamStage2Chat(
   sessionId: string,
   content: string,
+  signal?: AbortSignal,
 ): AsyncGenerator<SSEEvent> {
   const res = await fetch(
     `${API_BASE}/api/sessions/${sessionId}/stage2/chat`,
@@ -144,6 +163,7 @@ export async function* streamStage2Chat(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content }),
+      signal,
     },
   );
   if (!res.ok) throw new Error(`streamStage2Chat failed: ${res.status}`);
@@ -152,10 +172,11 @@ export async function* streamStage2Chat(
 
 export async function* streamCompleteStage2(
   sessionId: string,
+  signal?: AbortSignal,
 ): AsyncGenerator<SSEEvent> {
   const res = await fetch(
     `${API_BASE}/api/sessions/${sessionId}/stage2/complete`,
-    { method: "POST" },
+    { method: "POST", signal },
   );
   if (!res.ok) throw new Error(`streamCompleteStage2 failed: ${res.status}`);
   yield* parseSSE(res);
@@ -164,6 +185,7 @@ export async function* streamCompleteStage2(
 export async function* streamStage3Chat(
   sessionId: string,
   content: string,
+  signal?: AbortSignal,
 ): AsyncGenerator<SSEEvent> {
   const res = await fetch(
     `${API_BASE}/api/sessions/${sessionId}/stage3/chat`,
@@ -171,6 +193,7 @@ export async function* streamStage3Chat(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content }),
+      signal,
     },
   );
   if (!res.ok) throw new Error(`streamStage3Chat failed: ${res.status}`);

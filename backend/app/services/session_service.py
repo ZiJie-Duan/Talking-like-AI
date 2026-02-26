@@ -8,6 +8,7 @@ from beanie import PydanticObjectId
 from app.exceptions import (
     InsufficientMessagesError,
     InvalidStageError,
+    ModerationError,
     SessionNotFoundError,
 )
 from app.models.session import Annotation, Message, MoodRating, Session, SessionStage
@@ -15,7 +16,7 @@ from app.prompts import stage2, stage3, stage4
 from app.prompts.builder import build_messages
 from app.schemas.session import SessionOut
 from app.config import settings
-from app.services import llm_service
+from app.services import llm_service, moderation_service
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,11 @@ async def _touch(session: Session) -> None:
     await session.save()
 
 
+async def _terminate_session(session: Session) -> None:
+    session.stage = SessionStage.TERMINATED
+    await _touch(session)
+
+
 def _sse_event(event: str, data: dict) -> dict:
     return {"event": event, "data": json.dumps(data, ensure_ascii=False)}
 
@@ -79,6 +85,11 @@ async def submit_issue(session_id: str, content: str) -> SessionOut:
     if session.stage != SessionStage.INPUT:
         raise InvalidStageError(session.stage.value, SessionStage.INPUT.value)
 
+    mod = await moderation_service.check(content)
+    if not mod.passed:
+        await _terminate_session(session)
+        raise ModerationError()
+
     session.user_issue = content
     session.stage = SessionStage.CONVERSATION
     await _touch(session)
@@ -89,6 +100,12 @@ async def stage2_chat(session_id: str, content: str) -> AsyncGenerator[dict]:
     session = await _get_session(session_id)
     if session.stage != SessionStage.CONVERSATION:
         raise InvalidStageError(session.stage.value, SessionStage.CONVERSATION.value)
+
+    mod = await moderation_service.check(content)
+    if not mod.passed:
+        await _terminate_session(session)
+        yield _sse_event("moderation", {"category": mod.category})
+        return
 
     # Save user message
     user_msg = Message(role="user", content=content)
@@ -158,6 +175,12 @@ async def stage3_chat(session_id: str, content: str) -> AsyncGenerator[dict]:
     session = await _get_session(session_id)
     if session.stage != SessionStage.ROLE_SWAP:
         raise InvalidStageError(session.stage.value, SessionStage.ROLE_SWAP.value)
+
+    mod = await moderation_service.check(content)
+    if not mod.passed:
+        await _terminate_session(session)
+        yield _sse_event("moderation", {"category": mod.category})
+        return
 
     # Save user message
     user_msg = Message(role="user", content=content)

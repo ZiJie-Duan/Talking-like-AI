@@ -44,6 +44,7 @@ async def stream_chat(
 async def json_chat(
     messages: list[dict],
     model: str = settings.MODEL_STRONG,
+    max_tokens: int | None = None,
 ) -> dict:
     """Non-streaming chat completion with JSON response format."""
     client = _get_client()
@@ -51,7 +52,7 @@ async def json_chat(
         response = await client.chat.completions.create(
             model=model,
             messages=messages,
-            max_completion_tokens=settings.LLM_MAX_TOKENS_ANNOTATION,
+            max_completion_tokens=max_tokens or settings.LLM_MAX_TOKENS_ANNOTATION,
             response_format={"type": "json_object"},
         )
         content = response.choices[0].message.content

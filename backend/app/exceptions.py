@@ -33,3 +33,10 @@ class LLMError(AppError):
 
     def __init__(self, detail: str = "LLM service error"):
         super().__init__(detail)
+
+
+class ModerationError(AppError):
+    status_code: int = 451
+
+    def __init__(self):
+        super().__init__("对话因违反使用规范而终止")
